@@ -2,8 +2,8 @@ package wowchat
 
 import java.util.concurrent.{Executors, TimeUnit}
 
-import wowchat.common.{CommonConnectionCallback, Global, ReconnectDelay, WowChatConfig}
-import wowchat.discord.Discord
+import wowchat.common.{CommonConnectionCallback, Global, ReconnectDelay, WowChatConfig, ChatDirection}
+import wowchat.redis.Redis
 import wowchat.game.GameConnector
 import wowchat.realm.{RealmConnectionCallback, RealmConnector}
 import com.typesafe.scalalogging.StrictLogging
@@ -56,13 +56,16 @@ object WoWChat extends StrictLogging {
         new GameConnector(host, port, realmName, realmId, sessionKey, this).connect
       }
 
-      override def connected: Unit = reconnectDelay.reset
+      override def connected: Unit = {
+        reconnectDelay.reset
+        setupChannelMappings()
+      }
 
       override def disconnected: Unit = doReconnect
 
       def doReconnect: Unit = {
         Global.group.shutdownGracefully()
-        Global.discord.changeRealmStatus("Connecting...")
+        Global.redis.changeRealmStatus("Connecting...")
         val delay = reconnectDelay.getNext
         logger.info(s"Disconnected from server! Reconnecting in $delay seconds...")
 
@@ -72,12 +75,51 @@ object WoWChat extends StrictLogging {
       }
     }
 
-    logger.info("Connecting to Discord...")
-    Global.discord = new Discord(new CommonConnectionCallback {
+    logger.info("Connecting to Redis...")
+    Global.redis = new Redis(new CommonConnectionCallback {
       override def connected: Unit = gameConnectionController.connect
 
       override def error: Unit = sys.exit(1)
     })
+  }
+
+  private def setupChannelMappings(): Unit = {
+    // Clear existing mappings
+    Global.wowToRedis.clear
+    Global.guildEventsToRedis.clear
+
+    // Build directional maps for Redis channels
+    Global.config.channels.foreach { channelConfig =>
+      if (channelConfig.chatDirection == ChatDirection.both ||
+          channelConfig.chatDirection == ChatDirection.wow_to_redis) {
+        Global.wowToRedis.addBinding(
+          (channelConfig.wow.tp, channelConfig.wow.channel.map(_.toLowerCase)),
+          channelConfig.redis
+        )
+      }
+    }
+
+    // Build guild notification maps
+    val guildEventChannels = Global.config.guildConfig.notificationConfigs
+      .filter {
+        case (_, notificationConfig) =>
+          notificationConfig.enabled
+      }
+      .flatMap {
+        case (key, notificationConfig) =>
+          notificationConfig.channel.map(key -> _)
+      }
+
+    guildEventChannels.foreach {
+      case (notificationKey, channel) =>
+        Global.guildEventsToRedis.addBinding(notificationKey, channel)
+    }
+
+    if (Global.wowToRedis.nonEmpty) {
+      logger.info("Channel mappings configured successfully")
+    } else {
+      logger.error("No Redis channels configured!")
+    }
   }
 
   private def checkForNewVersion = {

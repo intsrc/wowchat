@@ -9,7 +9,7 @@ import wowchat.game.warden.{WardenHandler, WardenPackets}
 import com.typesafe.scalalogging.StrictLogging
 import io.netty.buffer.{ByteBuf, PooledByteBufAllocator}
 import io.netty.channel.{ChannelFuture, ChannelHandlerContext, ChannelInboundHandlerAdapter}
-import wowchat.commands.{CommandHandler, WhoResponse}
+import wowchat.commands.WhoResponse
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -62,7 +62,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
     gameEventCallback.disconnected
     Global.game = None
     if (inWorld) {
-      Global.discord.sendMessageFromWow(None, "Disconnected from server!", ChatEvents.CHAT_MSG_SYSTEM, None)
+      Global.redis.sendMessageFromWow(None, "Disconnected from server!", ChatEvents.CHAT_MSG_SYSTEM, None)
     }
     super.channelInactive(ctx)
   }
@@ -126,7 +126,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
   }
 
   protected def updateGuildiesOnline: Unit = {
-    Global.discord.changeGuildStatus(getGuildiesOnlineMessage(true))
+    Global.redis.changeGuildStatus(getGuildiesOnlineMessage(true))
   }
 
   protected def queryGuildName: Unit = {
@@ -327,7 +327,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
       .remove(nameQueryMessage.guid)
       .foreach(messages => {
         messages.foreach(message => {
-          Global.discord.sendMessageFromWow(Some(nameQueryMessage.name), message.message, message.tp, message.channel)
+          Global.redis.sendMessageFromWow(Some(nameQueryMessage.name), message.message, message.tp, message.channel)
         })
         playerRoster += nameQueryMessage.guid -> Player(nameQueryMessage.name, nameQueryMessage.charClass)
     })
@@ -417,7 +417,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
 
     logger.info("Successfully joined the world!")
     inWorld = true
-    Global.discord.changeRealmStatus(realmName)
+    Global.redis.changeRealmStatus(realmName)
     gameEventCallback.connected
     runKeepAliveExecutor
     runGuildRosterExecutor
@@ -521,7 +521,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
             .replace("%message", messages.head)
       }
 
-      Global.discord.sendGuildNotification(eventConfigKey, formatted)
+      Global.redis.sendGuildNotification(eventConfigKey, formatted)
     }
 
     updateGuildRoster
@@ -566,7 +566,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
 
   protected def sendChatMessage(chatMessage: ChatMessage): Unit = {
     if (chatMessage.guid == 0) {
-      Global.discord.sendMessageFromWow(None, chatMessage.message, chatMessage.tp, None)
+      Global.redis.sendMessageFromWow(None, chatMessage.message, chatMessage.tp, None)
     } else {
       playerRoster.get(chatMessage.guid).fold({
         queuedChatMessages.get(chatMessage.guid).fold({
@@ -574,7 +574,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
           sendNameQuery(chatMessage.guid)
         })(_ += chatMessage)
       })(name => {
-        Global.discord.sendMessageFromWow(Some(name.name), chatMessage.message, chatMessage.tp, chatMessage.channel)
+        Global.redis.sendMessageFromWow(Some(name.name), chatMessage.message, chatMessage.tp, chatMessage.channel)
       })
     }
   }
@@ -597,7 +597,7 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
     }
 
     // ignore if from an unhandled channel
-    if (!Global.wowToDiscord.contains((tp, channelName.map(_.toLowerCase)))) {
+    if (!Global.wowToRedis.contains((tp, channelName.map(_.toLowerCase)))) {
       return None
     }
 
@@ -661,44 +661,12 @@ class GamePacketHandler(realmId: Int, realmName: String, sessionKey: Array[Byte]
   // because the packet doesn't include a cookie/id/requested name if none found
   private def handle_SMSG_WHO(msg: Packet): Unit = {
     val displayResults = parseWhoResponse(msg)
-    // Try to find exact match
-    val exactName = CommandHandler.whoRequest.playerName.toLowerCase
-    val exactMatch = displayResults.find(_.playerName.toLowerCase == exactName)
-    val handledResponses = CommandHandler.handleWhoResponse(
-      exactMatch,
-      guildInfo,
-      guildRoster,
-      guildMember => guildMember.name.equalsIgnoreCase(CommandHandler.whoRequest.playerName)
-    )
-    if (handledResponses.isEmpty) {
-      // Exact match not found and no exact match in guild roster. Look for approximate matches.
-      if (displayResults.isEmpty) {
-        // No approximate matches found online. Try to find some in guild roster.
-        val approximateMatches = CommandHandler.handleWhoResponse(
-          exactMatch,
-          guildInfo,
-          guildRoster,
-          guildMember => guildMember.name.toLowerCase.contains(exactName)
-        )
-        if (approximateMatches.isEmpty) {
-          // No approximate matches found.
-          CommandHandler.whoRequest.messageChannel.sendMessage(s"No player named ${CommandHandler.whoRequest.playerName} is currently playing.").queue()
-        } else {
-          // Send at most 3 approximate matches.
-          approximateMatches.take(3).foreach(CommandHandler.whoRequest.messageChannel.sendMessage(_).queue())
-        }
-      } else {
-        // Approximate matches found online!
-        displayResults.take(3).foreach(whoResponse => {
-          CommandHandler.handleWhoResponse(Some(whoResponse),
-            guildInfo,
-            guildRoster,
-            guildMember => guildMember.name.equalsIgnoreCase(CommandHandler.whoRequest.playerName)
-          ).foreach(CommandHandler.whoRequest.messageChannel.sendMessage(_).queue())
-        })
-      }
-    } else {
-      handledResponses.foreach(CommandHandler.whoRequest.messageChannel.sendMessage(_).queue())
+    // For Redis integration, we just log the WHO response since we don't have interactive channels
+    if (displayResults.nonEmpty) {
+      val whoInfo = displayResults.take(3).map(response =>
+        s"${response.playerName} ${if (response.guildName.nonEmpty) s"<${response.guildName}> " else ""}is a level ${response.lvl}${response.gender.fold(" ")(g => s" $g ")}${response.race} ${response.cls} currently in ${response.zone}."
+      ).mkString("\n")
+      logger.info(s"WHO Response:\n$whoInfo")
     }
   }
 

@@ -11,15 +11,15 @@ import wowchat.game.GamePackets
 import scala.collection.JavaConverters._
 import scala.reflect.runtime.universe.{TypeTag, typeOf}
 
-case class WowChatConfig(discord: DiscordConfig, wow: Wow, guildConfig: GuildConfig, channels: Seq[ChannelConfig], filters: Option[FiltersConfig])
-case class DiscordConfig(token: String, enableDotCommands: Boolean, dotCommandsWhitelist: Set[String], enableCommandsChannels: Set[String], enableTagFailedNotifications: Boolean)
+case class WowChatConfig(redis: RedisConfig, wow: Wow, guildConfig: GuildConfig, channels: Seq[ChannelConfig], filters: Option[FiltersConfig])
+case class RedisConfig(host: String, port: Int, timeout: Int, password: Option[String], statusChannel: String, guildChannel: String, achievementChannel: String)
 case class Wow(locale: String, platform: Platform.Value, realmBuild: Option[Int], gameBuild: Option[Int], realmlist: RealmListConfig, account: Array[Byte], password: String, character: String, enableServerMotd: Boolean)
 case class RealmListConfig(name: String, host: String, port: Int)
 case class GuildConfig(notificationConfigs: Map[String, GuildNotificationConfig])
 case class GuildNotificationConfig(enabled: Boolean, format: String, channel: Option[String])
-case class ChannelConfig(chatDirection: ChatDirection, wow: WowChannelConfig, discord: DiscordChannelConfig)
+case class ChannelConfig(chatDirection: ChatDirection, wow: WowChannelConfig, redis: RedisChannelConfig)
 case class WowChannelConfig(id: Option[Int], tp: Byte, channel: Option[String] = None, format: String, filters: Option[FiltersConfig])
-case class DiscordChannelConfig(channel: String, format: String, filters: Option[FiltersConfig])
+case class RedisChannelConfig(channel: String, format: String, filters: Option[FiltersConfig])
 case class FiltersConfig(enabled: Boolean, patterns: Seq[String])
 
 object WowChatConfig extends GamePackets {
@@ -35,7 +35,7 @@ object WowChatConfig extends GamePackets {
       ConfigFactory.load(confFile)
     }).resolve
 
-    val discordConf = config.getConfig("discord")
+    val redisConf = config.getConfig("redis")
     val wowConf = config.getConfig("wow")
     val guildConf = getConfigOpt(config, "guild")
     val channelsConf = config.getConfig("chat")
@@ -46,14 +46,14 @@ object WowChatConfig extends GamePackets {
     expansion = WowExpansion.valueOf(version)
 
     WowChatConfig(
-      DiscordConfig(
-        discordConf.getString("token"),
-        getOpt[Boolean](discordConf, "enable_dot_commands").getOrElse(true),
-        getOpt[util.List[String]](discordConf, "dot_commands_whitelist")
-          .getOrElse(new util.ArrayList[String]()).asScala.map(_.toLowerCase).toSet,
-        getOpt[util.List[String]](discordConf, "enable_commands_channels")
-          .getOrElse(new util.ArrayList[String]()).asScala.map(_.toLowerCase).toSet,
-        getOpt[Boolean](discordConf, "enable_tag_failed_notifications").getOrElse(true)
+      RedisConfig(
+        getOpt[String](redisConf, "host").getOrElse("localhost"),
+        getOpt[Int](redisConf, "port").getOrElse(6379),
+        getOpt[Int](redisConf, "timeout").getOrElse(2000),
+        getOpt[String](redisConf, "password"),
+        getOpt[String](redisConf, "status_channel").getOrElse("wow:status"),
+        getOpt[String](redisConf, "guild_channel").getOrElse("wow:guild"),
+        getOpt[String](redisConf, "achievement_channel").getOrElse("wow:achievements")
       ),
       Wow(
         getOpt[String](wowConf, "locale").getOrElse("enUS"),
@@ -176,10 +176,10 @@ object WowChatConfig extends GamePackets {
             getOpt[String](channel, "wow.format").getOrElse(""),
             parseFilters(getConfigOpt(channel, "wow.filters"))
           ),
-          DiscordChannelConfig(
-            channel.getString("discord.channel"),
-            channel.getString("discord.format"),
-            parseFilters(getConfigOpt(channel, "discord.filters"))
+          RedisChannelConfig(
+            channel.getString("redis.channel"),
+            channel.getString("redis.format"),
+            parseFilters(getConfigOpt(channel, "redis.filters"))
           )
         )
     })
@@ -258,5 +258,5 @@ object WowExpansion extends Enumeration {
 
 object ChatDirection extends Enumeration {
   type ChatDirection = Value
-  val both, wow_to_discord, discord_to_wow = Value
+  val both, wow_to_redis, redis_to_wow = Value
 }
