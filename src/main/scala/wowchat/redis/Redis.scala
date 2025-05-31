@@ -3,22 +3,11 @@ package wowchat.redis
 import wowchat.common._
 import com.typesafe.scalalogging.StrictLogging
 import redis.clients.jedis.{Jedis, JedisPool, JedisPoolConfig}
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import org.json.JSONObject
 import wowchat.game.GamePackets
 
 import scala.collection.mutable
 import scala.util.{Success, Failure, Try}
-
-case class WowMessage(
-  messageType: String,
-  channel: Option[String],
-  user: Option[String], 
-  message: String,
-  timestamp: String,
-  realm: String,
-  character: String
-)
 
 class Redis(redisConnectionCallback: CommonConnectionCallback) extends GamePackets with StrictLogging {
 
@@ -34,9 +23,6 @@ class Redis(redisConnectionCallback: CommonConnectionCallback) extends GamePacke
     new JedisPool(poolConfig, Global.config.redis.host, Global.config.redis.port, 
                   Global.config.redis.timeout, Global.config.redis.password.orNull)
   }
-
-  private val objectMapper = new ObjectMapper()
-  objectMapper.registerModule(DefaultScalaModule)
 
   private var connected = false
   private var firstConnect = true
@@ -75,6 +61,18 @@ class Redis(redisConnectionCallback: CommonConnectionCallback) extends GamePacke
     }
   }
 
+  private def createWowMessage(messageType: String, channel: Option[String], user: Option[String], message: String): String = {
+    val json = new JSONObject()
+    json.put("messageType", messageType)
+    json.put("channel", channel.orNull)
+    json.put("user", user.orNull)
+    json.put("message", message)
+    json.put("timestamp", Global.getTime)
+    json.put("realm", Global.config.wow.realmlist.name)
+    json.put("character", Global.config.wow.character)
+    json.toString
+  }
+
   def changeRealmStatus(message: String): Unit = {
     publishStatusMessage("realm", message)
   }
@@ -87,17 +85,7 @@ class Redis(redisConnectionCallback: CommonConnectionCallback) extends GamePacke
     if (!connected) return
     
     try {
-      val statusMessage = WowMessage(
-        messageType = "status",
-        channel = Some(statusType),
-        user = None,
-        message = message,
-        timestamp = Global.getTime,
-        realm = Global.config.wow.realmlist.name,
-        character = Global.config.wow.character
-      )
-      
-      val jsonMessage = objectMapper.writeValueAsString(statusMessage)
+      val jsonMessage = createWowMessage("status", Some(statusType), None, message)
       withJedis { jedis =>
         jedis.publish(Global.config.redis.statusChannel, jsonMessage)
       }
@@ -127,17 +115,7 @@ class Redis(redisConnectionCallback: CommonConnectionCallback) extends GamePacke
           val filter = shouldFilter(channelConfig.filters, formatted)
           
           if (!filter) {
-            val wowMessage = WowMessage(
-              messageType = getMessageTypeName(wowType),
-              channel = wowChannel,
-              user = from,
-              message = formatted,
-              timestamp = Global.getTime,
-              realm = Global.config.wow.realmlist.name,
-              character = Global.config.wow.character
-            )
-            
-            val jsonMessage = objectMapper.writeValueAsString(wowMessage)
+            val jsonMessage = createWowMessage(getMessageTypeName(wowType), wowChannel, from, formatted)
             withJedis { jedis =>
               jedis.publish(channelConfig.channel, jsonMessage)
             }
@@ -160,17 +138,7 @@ class Redis(redisConnectionCallback: CommonConnectionCallback) extends GamePacke
       Global.guildEventsToRedis
         .getOrElse(eventKey, Set(Global.config.redis.guildChannel))
         .foreach(channel => {
-          val wowMessage = WowMessage(
-            messageType = "guild_notification",
-            channel = Some(eventKey),
-            user = None,
-            message = message,
-            timestamp = Global.getTime,
-            realm = Global.config.wow.realmlist.name,
-            character = Global.config.wow.character
-          )
-          
-          val jsonMessage = objectMapper.writeValueAsString(wowMessage)
+          val jsonMessage = createWowMessage("guild_notification", Some(eventKey), None, message)
           withJedis { jedis =>
             jedis.publish(channel, jsonMessage)
           }
@@ -197,17 +165,7 @@ class Redis(redisConnectionCallback: CommonConnectionCallback) extends GamePacke
         .replace("%user", name)
         .replace("%achievement", s"Achievement #$achievementId") // Simplified achievement resolution
 
-      val wowMessage = WowMessage(
-        messageType = "achievement",
-        channel = None,
-        user = Some(name),
-        message = formatted,
-        timestamp = Global.getTime,
-        realm = Global.config.wow.realmlist.name,
-        character = Global.config.wow.character
-      )
-
-      val jsonMessage = objectMapper.writeValueAsString(wowMessage)
+      val jsonMessage = createWowMessage("achievement", None, Some(name), formatted)
       withJedis { jedis =>
         jedis.publish(Global.config.redis.achievementChannel, jsonMessage)
       }
